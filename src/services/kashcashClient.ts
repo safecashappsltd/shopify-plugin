@@ -141,7 +141,7 @@ export class KashCashClient {
         return {
           success: false,
           errorCode: `HTTP_${response.status}`,
-          errorMessage: errorText || `Refund failed with status ${response.status}`,
+          errorMessage: 'Refund request was declined by KashCash',
         };
       }
 
@@ -158,12 +158,11 @@ export class KashCashClient {
         refundTransactionId: refundTxId,
       };
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown refund network error';
       logger.error({ err, transactionId: input.transactionId }, 'Exception during KashCash refund');
       return {
         success: false,
         errorCode: 'NETWORK_ERROR',
-        errorMessage: message,
+        errorMessage: 'Communication error with payment gateway',
       };
     }
   }

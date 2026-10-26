@@ -7,9 +7,23 @@ import { KashCashClient } from '../services/kashcashClient.js';
 import { ShopifyPaymentsClient } from '../services/shopifyPaymentsClient.js';
 import { logger } from '../utils/logger.js';
 
+const httpsUrlSchema = z
+  .string()
+  .url()
+  .refine(
+    (u) => {
+      try {
+        return new URL(u).protocol === 'https:';
+      } catch {
+        return false;
+      }
+    },
+    { message: 'URL must use HTTPS protocol' }
+  );
+
 const paymentSessionRequestSchema = z.object({
-  id: z.string().min(1),
-  gid: z.string().min(1),
+  id: z.string().min(1).max(128),
+  gid: z.string().min(1).max(256),
   group: z.string().optional(),
   amount: z.union([z.string(), z.number()]).transform((v) => Number(v)),
   currency: z.string().min(3).max(3).transform((v) => v.toUpperCase()),
@@ -20,7 +34,7 @@ const paymentSessionRequestSchema = z.object({
       type: z.string(),
       data: z
         .object({
-          cancel_url: z.string().url(),
+          cancel_url: httpsUrlSchema,
         })
         .passthrough(),
     })
@@ -30,9 +44,9 @@ const paymentSessionRequestSchema = z.object({
 });
 
 const refundSessionRequestSchema = z.object({
-  id: z.string().min(1),
-  gid: z.string().min(1),
-  payment_id: z.string().min(1),
+  id: z.string().min(1).max(128),
+  gid: z.string().min(1).max(256),
+  payment_id: z.string().min(1).max(128),
   amount: z.union([z.string(), z.number()]).transform((v) => Number(v)),
   currency: z.string().min(3).max(3).transform((v) => v.toUpperCase()),
   test: z.boolean().optional().default(false),
@@ -41,9 +55,9 @@ const refundSessionRequestSchema = z.object({
 });
 
 const captureOrVoidSessionSchema = z.object({
-  id: z.string().min(1),
-  gid: z.string().min(1),
-  payment_id: z.string().min(1),
+  id: z.string().min(1).max(128),
+  gid: z.string().min(1).max(256),
+  payment_id: z.string().min(1).max(128),
   amount: z
     .union([z.string(), z.number()])
     .optional()
@@ -107,7 +121,6 @@ export function createShopifySessionRouter(deps: {
         res.status(400).json({
           error: 'Invalid payment session payload',
           code: 'VALIDATION_ERROR',
-          details: parsed.error.flatten(),
         });
         return;
       }
@@ -198,7 +211,6 @@ export function createShopifySessionRouter(deps: {
         res.status(400).json({
           error: 'Invalid refund session payload',
           code: 'VALIDATION_ERROR',
-          details: parsed.error.flatten(),
         });
         return;
       }
@@ -222,10 +234,30 @@ export function createShopifySessionRouter(deps: {
       }
 
       const paymentSession = repo.getPaymentSessionByShopifyId(payload.payment_id);
-      if (!paymentSession || !paymentSession.kashcashTransactionId) {
+      if (
+        !paymentSession ||
+        paymentSession.shopDomain !== shopDomain ||
+        !paymentSession.kashcashTransactionId
+      ) {
         res.status(404).json({
           error: 'Original KashCash payment transaction not found',
           code: 'ORIGINAL_PAYMENT_NOT_FOUND',
+        });
+        return;
+      }
+
+      if (paymentSession.status !== 'APPROVED') {
+        res.status(422).json({
+          error: 'Only approved payment sessions can be refunded',
+          code: 'PAYMENT_NOT_APPROVED',
+        });
+        return;
+      }
+
+      if (payload.currency !== paymentSession.currency) {
+        res.status(422).json({
+          error: 'Refund currency does not match original payment currency',
+          code: 'CURRENCY_MISMATCH',
         });
         return;
       }
@@ -242,6 +274,25 @@ export function createShopifySessionRouter(deps: {
       // Idempotency: if already resolved, return 201 immediately
       if (refundSession.status === 'RESOLVED') {
         res.status(201).json({ status: 'RESOLVED' });
+        return;
+      }
+
+      const alreadyRefunded = repo.getTotalRefundedAmount(payload.payment_id, payload.id);
+      if (alreadyRefunded + payload.amount > paymentSession.amount + 0.0001) {
+        logger.warn(
+          {
+            shopDomain,
+            paymentSessionId: payload.payment_id,
+            originalAmount: paymentSession.amount,
+            alreadyRefunded,
+            requestedRefund: payload.amount,
+          },
+          'Rejected refund exceeding original payment amount'
+        );
+        res.status(422).json({
+          error: 'Cumulative refund amount exceeds original payment amount',
+          code: 'REFUND_AMOUNT_EXCEEDED',
+        });
         return;
       }
 
@@ -372,7 +423,15 @@ export function createShopifySessionRouter(deps: {
       }
 
       const paymentSession = repo.getPaymentSessionByShopifyId(parsed.data.payment_id);
-      if (paymentSession?.kashcashTransactionId) {
+      if (paymentSession && paymentSession.shopDomain !== shopDomain) {
+        res.status(404).json({ error: 'Payment session not found', code: 'PAYMENT_NOT_FOUND' });
+        return;
+      }
+
+      if (
+        paymentSession?.kashcashTransactionId &&
+        paymentSession.status !== 'APPROVED'
+      ) {
         await kashcashClient.cancelTransaction({
           transactionId: paymentSession.kashcashTransactionId,
           businessId: merchant.businessId,

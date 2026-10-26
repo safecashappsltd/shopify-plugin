@@ -9,13 +9,25 @@ import { logger } from '../utils/logger.js';
 
 const webhookBodySchema = z.object({
   orderId: z.union([z.string(), z.number()]).transform((v) => String(v).trim()),
-  status: z.string().min(1),
-  transactionId: z.string().min(1),
+  status: z.string().min(1).max(32),
+  transactionId: z.string().min(1).max(128),
   token: z.string().optional(),
 });
 
 export interface RequestWithRawBody extends Request {
   rawBody?: string;
+}
+
+function isSafeHttpsUrl(candidate: string | null | undefined): candidate is string {
+  if (!candidate) {
+    return false;
+  }
+  try {
+    const parsed = new URL(candidate);
+    return parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 export function createKashCashBackChannelRouter(deps: {
@@ -33,7 +45,7 @@ export function createKashCashBackChannelRouter(deps: {
    */
   router.get('/wp-json/kashcash/v1/order/:orderId', (req: RequestWithRawBody, res: Response) => {
     const rawOrderId = typeof req.params.orderId === 'string' ? req.params.orderId : '';
-    if (!/^\d+$/.test(rawOrderId)) {
+    if (!/^\d{1,15}$/.test(rawOrderId)) {
       res.status(400).json({
         error: 'Invalid orderId parameter',
         code: 'INVALID_ORDER_ID',
@@ -136,7 +148,7 @@ export function createKashCashBackChannelRouter(deps: {
     }
 
     const parsed = webhookBodySchema.safeParse(req.body);
-    if (!parsed.success || !/^\d+$/.test(parsed.data.orderId)) {
+    if (!parsed.success || !/^\d{1,15}$/.test(parsed.data.orderId)) {
       res.status(400).json({
         message: 'Invalid webhook payload',
         error: 'Invalid webhook payload',
@@ -158,6 +170,34 @@ export function createKashCashBackChannelRouter(deps: {
       return;
     }
 
+    // Prevent transactionId replay across different orders
+    const existingSessionForTx = repo.getPaymentSessionByKashCashTransactionId(transactionId);
+    if (existingSessionForTx && existingSessionForTx.orderId !== orderId) {
+      logger.error(
+        { orderId, transactionId, boundOrderId: existingSessionForTx.orderId },
+        'Security Alert: Attempted to bind transactionId already associated with another order'
+      );
+      res.status(409).json({
+        message: 'Transaction already bound to another order',
+        error: 'Transaction already bound to another order',
+        code: 'TRANSACTION_REPLAY_DETECTED',
+      });
+      return;
+    }
+
+    if (session.kashcashTransactionId && session.kashcashTransactionId !== transactionId) {
+      logger.error(
+        { orderId, expectedTx: session.kashcashTransactionId, receivedTx: transactionId },
+        'Security Alert: Attempted to overwrite bound transactionId on payment session'
+      );
+      res.status(409).json({
+        message: 'Order is already bound to a different transaction',
+        error: 'Order is already bound to a different transaction',
+        code: 'TRANSACTION_MISMATCH',
+      });
+      return;
+    }
+
     const merchant = repo.getMerchant(session.shopDomain);
     if (!merchant || !merchant.merchantToken) {
       res.status(400).json({
@@ -174,6 +214,20 @@ export function createKashCashBackChannelRouter(deps: {
       // Idempotency: if already approved and resolved, return the existing redirect URL
       if (session.status === 'APPROVED' && session.redirectUrl) {
         res.status(200).type('text/plain').send(session.redirectUrl);
+        return;
+      }
+
+      // Prevent approving a session that was already rejected or canceled
+      if (session.status === 'REJECTED' || session.status === 'CANCELED') {
+        logger.warn(
+          { orderId, transactionId, currentStatus: session.status },
+          'Rejected attempt to approve a payment session that is already terminal'
+        );
+        res.status(409).json({
+          message: 'Payment session is already closed',
+          error: 'Payment session is already closed',
+          code: 'INVALID_STATE_TRANSITION',
+        });
         return;
       }
 
@@ -233,6 +287,19 @@ export function createKashCashBackChannelRouter(deps: {
         return;
       }
 
+      if (session.status === 'APPROVED') {
+        logger.warn(
+          { orderId, transactionId },
+          'Rejected attempt to mark an already APPROVED session as REJECTED'
+        );
+        res.status(409).json({
+          message: 'Payment session is already approved',
+          error: 'Payment session is already approved',
+          code: 'INVALID_STATE_TRANSITION',
+        });
+        return;
+      }
+
       try {
         const rejected = await shopifyClient.rejectPaymentSession({
           shopDomain: session.shopDomain,
@@ -266,7 +333,7 @@ export function createKashCashBackChannelRouter(deps: {
     }
 
     res.status(400).json({
-      error: `Unsupported status: ${status}`,
+      error: 'Unsupported payment status',
       code: 'UNSUPPORTED_STATUS',
     });
   };
@@ -283,7 +350,7 @@ export function createKashCashBackChannelRouter(deps: {
     const rawOrderId = typeof req.params.orderId === 'string' ? req.params.orderId : '';
     const providedKey = typeof req.query.key === 'string' ? req.query.key : '';
 
-    if (!/^\d+$/.test(rawOrderId)) {
+    if (!/^\d{1,15}$/.test(rawOrderId)) {
       res.status(400).send('Invalid order reference');
       return;
     }
@@ -300,26 +367,25 @@ export function createKashCashBackChannelRouter(deps: {
       return;
     }
 
-    if (session.status === 'APPROVED' && session.redirectUrl) {
+    if (session.status === 'APPROVED' && isSafeHttpsUrl(session.redirectUrl)) {
       res.redirect(302, session.redirectUrl);
       return;
     }
 
     if (session.status === 'REJECTED' || session.status === 'CANCELED') {
-      res.redirect(302, session.redirectUrl ?? session.cancelUrl);
+      const targetUrl = isSafeHttpsUrl(session.redirectUrl)
+        ? session.redirectUrl
+        : session.cancelUrl;
+      res.redirect(302, targetUrl);
       return;
     }
 
-    // Handle race condition: browser arrived before async webhook finished processing
-    const candidateTxId =
-      session.kashcashTransactionId ??
-      (typeof req.query.transactionId === 'string' ? req.query.transactionId : null);
-
-    if (candidateTxId) {
+    // Only check transactionId if already bound by a verified signed back-channel webhook
+    if (session.kashcashTransactionId) {
       const merchant = repo.getMerchant(session.shopDomain);
       if (merchant?.merchantToken) {
         const completed = await kashcashClient.verifyTransactionCompleted({
-          transactionId: candidateTxId,
+          transactionId: session.kashcashTransactionId,
           merchantToken: merchant.merchantToken,
           testMode: session.testMode,
         });
@@ -334,11 +400,13 @@ export function createKashCashBackChannelRouter(deps: {
             repo.updatePaymentSessionStatus({
               orderId,
               status: 'APPROVED',
-              kashcashTransactionId: candidateTxId,
+              kashcashTransactionId: session.kashcashTransactionId,
               redirectUrl: resolved.redirectUrl,
             });
-            res.redirect(302, resolved.redirectUrl);
-            return;
+            if (isSafeHttpsUrl(resolved.redirectUrl)) {
+              res.redirect(302, resolved.redirectUrl);
+              return;
+            }
           } catch (err) {
             logger.error({ err, orderId }, 'Failed to resolve session during front-channel return');
           }
@@ -348,7 +416,7 @@ export function createKashCashBackChannelRouter(deps: {
 
     // Render auto-polling completion screen while waiting for webhook
     const statusEndpoint = `/api/shopify/session-status/${orderId}?key=${encodeURIComponent(providedKey)}`;
-    const fallbackCancelUrl = session.cancelUrl;
+    const fallbackCancelUrl = isSafeHttpsUrl(session.cancelUrl) ? session.cancelUrl : '#';
 
     res.status(200).type('text/html; charset=utf-8').send(`<!DOCTYPE html>
 <html lang="he" dir="rtl">
@@ -418,7 +486,7 @@ export function createKashCashBackChannelRouter(deps: {
         fetch(${JSON.stringify(statusEndpoint)})
           .then(function(r) { return r.json(); })
           .then(function(data) {
-            if (data.redirectUrl) {
+            if (data.redirectUrl && data.redirectUrl.indexOf('https://') === 0) {
               window.location.replace(data.redirectUrl);
               return;
             }
@@ -448,7 +516,7 @@ export function createKashCashBackChannelRouter(deps: {
     const rawOrderId = typeof req.params.orderId === 'string' ? req.params.orderId : '';
     const providedKey = typeof req.query.key === 'string' ? req.query.key : '';
 
-    if (!/^\d+$/.test(rawOrderId)) {
+    if (!/^\d{1,15}$/.test(rawOrderId)) {
       res.status(400).json({ error: 'Invalid orderId', code: 'INVALID_ORDER_ID' });
       return;
     }
@@ -459,14 +527,16 @@ export function createKashCashBackChannelRouter(deps: {
       return;
     }
 
+    const candidateUrl =
+      session.status === 'APPROVED'
+        ? session.redirectUrl
+        : session.status === 'REJECTED' || session.status === 'CANCELED'
+          ? session.redirectUrl ?? session.cancelUrl
+          : null;
+
     res.status(200).json({
       status: session.status,
-      redirectUrl:
-        session.status === 'APPROVED'
-          ? session.redirectUrl
-          : session.status === 'REJECTED' || session.status === 'CANCELED'
-            ? session.redirectUrl ?? session.cancelUrl
-            : null,
+      redirectUrl: isSafeHttpsUrl(candidateUrl) ? candidateUrl : null,
     });
   });
 

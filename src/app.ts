@@ -9,6 +9,7 @@ import {
   RequestWithRawBody,
 } from './routes/kashcashBackChannelRoutes.js';
 import { createShopifySessionRouter } from './routes/shopifySessionRoutes.js';
+import { createRateLimiter } from './security/rateLimiter.js';
 import { KashCashClient } from './services/kashcashClient.js';
 import { ShopifyPaymentsClient } from './services/shopifyPaymentsClient.js';
 import { logger } from './utils/logger.js';
@@ -27,7 +28,7 @@ export function createApp(deps: AppDependencies): Express {
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
 
-  // Security HTTP headers (CSP, HSTS, X-Frame-Options, X-Content-Type-Options)
+  // Security HTTP headers (CSP, HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy)
   app.use(
     helmet({
       contentSecurityPolicy: {
@@ -40,10 +41,21 @@ export function createApp(deps: AppDependencies): Express {
           frameAncestors: ["'self'", 'https://*.myshopify.com', 'https://admin.shopify.com'],
         },
       },
+      referrerPolicy: {
+        policy: 'no-referrer',
+      },
       strictTransportSecurity: {
         maxAge: 31536000,
         includeSubDomains: true,
       },
+    })
+  );
+
+  // Sliding-window IP rate limiter against brute-force & enumeration
+  app.use(
+    createRateLimiter({
+      windowMs: 60_000,
+      maxRequests: 180,
     })
   );
 
@@ -67,16 +79,12 @@ export function createApp(deps: AppDependencies): Express {
     })
   );
 
-  // Health check endpoint covering database & environment readiness
+  // Minimal health check endpoint — zero internal URL or environment disclosure
   app.get('/healthz', (_req: Request, res: Response) => {
     const dbOk = repo.ping();
     const status = dbOk ? 200 : 503;
     res.status(status).json({
       status: dbOk ? 'ok' : 'degraded',
-      environment: appConfig.APP_ENV,
-      kashcashApiUrl: kashcashClient.getApiBaseUrl(appConfig.APP_ENV === 'dev'),
-      database: dbOk ? 'connected' : 'disconnected',
-      timestamp: new Date().toISOString(),
     });
   });
 
@@ -105,10 +113,10 @@ export function createApp(deps: AppDependencies): Express {
     })
   );
 
-  // 404 Not Found handler
-  app.use((req: Request, res: Response) => {
+  // 404 Not Found handler (does not reflect untrusted path input)
+  app.use((_req: Request, res: Response) => {
     res.status(404).json({
-      error: `Route ${req.method} ${req.path} not found`,
+      error: 'Resource not found',
       code: 'ROUTE_NOT_FOUND',
     });
   });

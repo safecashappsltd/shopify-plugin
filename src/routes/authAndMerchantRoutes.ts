@@ -208,7 +208,6 @@ export function createAuthAndMerchantRouter(deps: {
       return;
     }
 
-    const envBadge = appConfig.APP_ENV === 'prod' ? 'PRODUCTION' : 'DEV / STAGE';
     const currentBusinessId = merchant.businessId ?? '';
     const isConfigured = merchant.isConfigured;
     const isTestMode = merchant.testMode || appConfig.APP_ENV === 'dev';
@@ -257,15 +256,6 @@ export function createAuthAndMerchantRouter(deps: {
     .header h1 {
       font-size: 1.5rem;
       font-weight: 700;
-    }
-    .badge {
-      padding: 4px 12px;
-      border-radius: 999px;
-      font-size: 0.8rem;
-      font-weight: 600;
-      background: ${appConfig.APP_ENV === 'prod' ? '#e3f1df' : '#fff5ea'};
-      color: ${appConfig.APP_ENV === 'prod' ? '#108043' : '#b98900'};
-      border: 1px solid ${appConfig.APP_ENV === 'prod' ? '#95c9b4' : '#e1b878'};
     }
     .card {
       background: var(--surface);
@@ -395,7 +385,6 @@ export function createAuthAndMerchantRouter(deps: {
   <main class="wrapper">
     <header class="header">
       <h1>KashCash Payments - הגדרות חיבור</h1>
-      <span class="badge" aria-label="סביבת מערכת">${escapeHtml(envBadge)}</span>
     </header>
 
     <section class="card" aria-labelledby="settings-heading">
@@ -422,7 +411,7 @@ export function createAuthAndMerchantRouter(deps: {
             required
             aria-describedby="businessIdError"
           />
-          <p class="help-text">מזהה העסק כפי שמופיע במערכת KashCash (זהה להגדרת התוסף ב-WooCommerce).</p>
+          <p class="help-text">מזהה העסק כפי שמופיע במערכת KashCash.</p>
           <p class="field-error" id="businessIdError" role="alert">נא להזין Business ID תקין (לפחות 2 תווים).</p>
         </div>
 
@@ -437,16 +426,16 @@ export function createAuthAndMerchantRouter(deps: {
             autocomplete="off"
             aria-describedby="merchantTokenError"
           />
-          <p class="help-text">הטוקן נשמר מוצפן (AES-256-GCM) ומשמש לאימות העסקאות מול שרתי KashCash.</p>
+          <p class="help-text">הטוקן נשמר מוצפן ומשמש לאימות העסקאות מול KashCash.</p>
           <p class="field-error" id="merchantTokenError" role="alert">נא להזין Merchant Token תקין (לפחות 6 תווים).</p>
         </div>
 
         <div class="form-group">
           <label class="checkbox-row" for="testMode">
             <input type="checkbox" id="testMode" name="testMode" ${isTestMode ? 'checked' : ''} />
-            <span>Enable Test Mode (חיבור לשרת הבדיקות Stage: stage-api.safecashapps.com)</span>
+            <span>מצב בדיקות (Test Mode)</span>
           </label>
-          <p class="help-text">כאשר מסומן, התשלומים יופנו לסביבת הבדיקות (Stage). בייצור (PROD) יש להסיר את הסימון.</p>
+          <p class="help-text">כאשר מסומן, ניתן לבצע עסקאות בדיקה לפני העלייה לאוויר.</p>
         </div>
 
         <button type="submit" class="btn-submit" id="submitBtn">שמור והפעל ב-Shopify</button>
@@ -556,7 +545,6 @@ export function createAuthAndMerchantRouter(deps: {
       res.status(400).json({
         error: 'Validation failed',
         code: 'VALIDATION_ERROR',
-        details: parsed.error.flatten(),
       });
       return;
     }

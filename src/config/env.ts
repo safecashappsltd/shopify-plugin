@@ -19,6 +19,9 @@ export const DEFAULT_KASHCASH_PUBLIC_KEY_PEM = [
   '-----END PUBLIC KEY-----',
 ].join('\n');
 
+const DEFAULT_DEV_ENCRYPTION_KEY =
+  '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'staging', 'production']).default('development'),
   APP_ENV: z.enum(['dev', 'prod']).default('dev'),
@@ -31,7 +34,7 @@ const envSchema = z.object({
   ENCRYPTION_KEY: z
     .string()
     .regex(/^[0-9a-fA-F]{64}$/, 'ENCRYPTION_KEY must be a 64-character hex string (32 bytes)')
-    .default('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'),
+    .default(DEFAULT_DEV_ENCRYPTION_KEY),
   DATABASE_PATH: z.string().min(1).default('./data/kashcash-shopify.db'),
   KASHCASH_STAGE_API_URL: z.string().url().default('https://stage-api.safecashapps.com'),
   KASHCASH_PROD_API_URL: z.string().url().default('https://prod-api.safecashapps.com'),
@@ -60,7 +63,25 @@ export function loadConfig(overrides?: Partial<Record<string, string>>): AppConf
     const issues = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
     throw new Error(`Invalid environment configuration: ${issues}`);
   }
-  return parsed.data;
+
+  const data = parsed.data;
+  if (data.NODE_ENV === 'production') {
+    if (data.ENCRYPTION_KEY === DEFAULT_DEV_ENCRYPTION_KEY) {
+      throw new Error(
+        'Security Error: Default ENCRYPTION_KEY is forbidden when NODE_ENV=production'
+      );
+    }
+    if (
+      data.SHOPIFY_API_KEY === 'dev_shopify_api_key' ||
+      data.SHOPIFY_API_SECRET === 'dev_shopify_api_secret'
+    ) {
+      throw new Error(
+        'Security Error: Default SHOPIFY_API_KEY / SHOPIFY_API_SECRET are forbidden when NODE_ENV=production'
+      );
+    }
+  }
+
+  return data;
 }
 
 export const config: AppConfig = loadConfig();

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -130,7 +131,7 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 CREATE INDEX IF NOT EXISTS idx_oauth_states_expires_at ON oauth_states(expires_at);
 
 CREATE TABLE IF NOT EXISTS payment_sessions (
-  order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id INTEGER PRIMARY KEY,
   shopify_session_id TEXT NOT NULL UNIQUE,
   shopify_gid TEXT NOT NULL,
   shop_domain TEXT NOT NULL,
@@ -140,7 +141,7 @@ CREATE TABLE IF NOT EXISTS payment_sessions (
   order_key TEXT NOT NULL,
   cancel_url TEXT NOT NULL,
   redirect_url TEXT,
-  kashcash_transaction_id TEXT,
+  kashcash_transaction_id TEXT UNIQUE,
   status TEXT NOT NULL DEFAULT 'PENDING',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -148,9 +149,6 @@ CREATE TABLE IF NOT EXISTS payment_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_payment_sessions_shop_domain ON payment_sessions(shop_domain);
 CREATE INDEX IF NOT EXISTS idx_payment_sessions_kashcash_tx ON payment_sessions(kashcash_transaction_id);
-
--- Ensure AUTOINCREMENT starts at 100000 so numeric orderId is always 6+ digits
-INSERT OR IGNORE INTO sqlite_sequence (name, seq) VALUES ('payment_sessions', 100000);
 
 CREATE TABLE IF NOT EXISTS refund_sessions (
   shopify_refund_id TEXT PRIMARY KEY,
@@ -343,6 +341,23 @@ export class KashCashRepository {
   // ==========================================================================
   // Payment Sessions
   // ==========================================================================
+  /**
+   * Generates a cryptographically random 12-digit integer orderId (100,000,000,000 - 999,999,999,999)
+   * so external callers cannot guess or enumerate order IDs or infer store transaction volume.
+   */
+  private generateUniqueOrderId(): number {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const candidate = crypto.randomInt(100_000_000_000, 999_999_999_999);
+      const exists = this.db
+        .prepare('SELECT 1 FROM payment_sessions WHERE order_id = ?')
+        .get(candidate);
+      if (!exists) {
+        return candidate;
+      }
+    }
+    throw new Error('Failed to generate unique random orderId');
+  }
+
   public createOrGetPaymentSession(input: CreatePaymentSessionInput): PaymentSessionRecord {
     const existing = this.getPaymentSessionByShopifyId(input.shopifySessionId);
     if (existing) {
@@ -350,14 +365,17 @@ export class KashCashRepository {
     }
 
     const now = new Date().toISOString();
-    const info = this.db
+    const orderId = this.generateUniqueOrderId();
+
+    this.db
       .prepare(
         `INSERT INTO payment_sessions (
-          shopify_session_id, shopify_gid, shop_domain, amount, currency,
+          order_id, shopify_session_id, shopify_gid, shop_domain, amount, currency,
           test_mode, order_key, cancel_url, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`
       )
       .run(
+        orderId,
         input.shopifySessionId,
         input.shopifyGid,
         input.shopDomain,
@@ -370,7 +388,7 @@ export class KashCashRepository {
         now
       );
 
-    const created = this.getPaymentSessionByOrderId(Number(info.lastInsertRowid));
+    const created = this.getPaymentSessionByOrderId(orderId);
     if (!created) {
       throw new Error('Failed to load created payment session');
     }
@@ -401,6 +419,22 @@ export class KashCashRepository {
          WHERE shopify_session_id = ?`
       )
       .get(shopifySessionId) as RawPaymentSessionRow | undefined;
+
+    return row ? this.mapPaymentSessionRow(row) : null;
+  }
+
+  public getPaymentSessionByKashCashTransactionId(
+    kashcashTransactionId: string
+  ): PaymentSessionRecord | null {
+    const row = this.db
+      .prepare(
+        `SELECT order_id, shopify_session_id, shopify_gid, shop_domain, amount, currency,
+                test_mode, order_key, cancel_url, redirect_url, kashcash_transaction_id,
+                status, created_at, updated_at
+         FROM payment_sessions
+         WHERE kashcash_transaction_id = ?`
+      )
+      .get(kashcashTransactionId) as RawPaymentSessionRow | undefined;
 
     return row ? this.mapPaymentSessionRow(row) : null;
   }
@@ -518,6 +552,26 @@ export class KashCashRepository {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
+  }
+
+  public getTotalRefundedAmount(paymentSessionId: string, excludeRefundId?: string): number {
+    const row = excludeRefundId
+      ? (this.db
+          .prepare(
+            `SELECT COALESCE(SUM(amount), 0) AS total
+             FROM refund_sessions
+             WHERE payment_session_id = ? AND status = 'RESOLVED' AND shopify_refund_id != ?`
+          )
+          .get(paymentSessionId, excludeRefundId) as { total: number })
+      : (this.db
+          .prepare(
+            `SELECT COALESCE(SUM(amount), 0) AS total
+             FROM refund_sessions
+             WHERE payment_session_id = ? AND status = 'RESOLVED'`
+          )
+          .get(paymentSessionId) as { total: number });
+
+    return Number(row?.total ?? 0);
   }
 
   public updateRefundSessionStatus(params: {
