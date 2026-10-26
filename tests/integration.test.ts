@@ -156,6 +156,67 @@ describe('KashCash Shopify Payments App - End-to-End Integration & Security Test
     expect(savedMerchant?.isConfigured).toBe(true);
     expect(savedMerchant?.businessId).toBe('515123456');
     expect(savedMerchant?.merchantToken).toBe('kc_merchant_secret_token_abc');
+
+    // 4. Maintenance update: toggle testMode without re-entering merchantToken (keeps existing token)
+    shopifyFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: {
+            paymentsAppsConfigure: {
+              paymentsAppConfiguration: { externalHandle: 'kashcash_515123456', ready: true },
+              userErrors: [],
+            },
+          },
+        }),
+        { status: 200 }
+      )
+    );
+
+    const maintenanceRes = await request(app)
+      .post('/api/merchant/settings')
+      .send({
+        shopDomain: TEST_SHOP,
+        sessionToken,
+        businessId: '515123456',
+        merchantToken: '',
+        testMode: true,
+      });
+    expect(maintenanceRes.status).toBe(200);
+    const updatedMerchant = repo.getMerchant(TEST_SHOP);
+    expect(updatedMerchant?.testMode).toBe(true);
+    expect(updatedMerchant?.merchantToken).toBe('kc_merchant_secret_token_abc');
+
+    // 5. Root URL '/' redirects to '/app' and '/app' without shop renders Quick-Connect wizard
+    const rootRes = await request(app).get(`/?shop=${TEST_SHOP}`);
+    expect(rootRes.status).toBe(302);
+    expect(rootRes.headers.location).toBe(`/app?shop=${TEST_SHOP}`);
+
+    const quickConnectRes = await request(app).get('/app');
+    expect(quickConnectRes.status).toBe(200);
+    expect(quickConnectRes.text).toContain('connectForm');
+
+    // 6. Disconnect / reset merchant credentials
+    shopifyFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: {
+            paymentsAppsConfigure: {
+              paymentsAppConfiguration: { externalHandle: 'kashcash_disconnected', ready: false },
+              userErrors: [],
+            },
+          },
+        }),
+        { status: 200 }
+      )
+    );
+    const disconnectRes = await request(app)
+      .post('/api/merchant/disconnect')
+      .send({
+        shopDomain: TEST_SHOP,
+        sessionToken,
+      });
+    expect(disconnectRes.status).toBe(200);
+    expect(repo.getMerchant(TEST_SHOP)?.isConfigured).toBe(false);
   });
 
   it('processes full payment lifecycle with random 12-digit orderId, replay protection, and cumulative refund cap', async () => {

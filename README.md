@@ -1,81 +1,97 @@
 # KashCash Payments App for Shopify (`shopify-kashcash-payments`)
 
-תוסף סליקה רשמי לשופיפיי (**Shopify Offsite Payments App**) עבור **KashCash**, התומך בשתי הסביבות (**DEV/STAGE** ו-**PROD**) ועובד מול ה-Ecommerce API של `cashi-server` באותו פרוטוקול ואבטחה כמו תוסף ה-WooCommerce הקיים.
+תוסף סליקה רשמי לשופיפיי (**Shopify Offsite Payments App**) עבור **KashCash**, הבנוי לתפעול, אונבורדינג ותחזוקה פשוטים ומהירים במיוחד ובסטנדרט אבטחה פיננסי מחמיר.
 
 ---
 
-## ארכיטקטורה וזרימת התשלום (End-to-End Flow)
+## 1. אונבורדינג לבית העסק (Merchant Onboarding ב-3 שלבים פשוטים)
 
-```mermaid
-sequenceDiagram
-    participant Buyer as לקוח (Browser / App)
-    participant Shopify as Shopify Checkout
-    participant Plugin as KashCash Shopify App
-    participant Cashi as KashCash Server (Stage / Prod)
+תהליך החיבור של בעל חנות Shopify תוכנן להיות אוטומטי ופשוט ככל האפשר (פחות מדקה):
 
-    Buyer->>Shopify: בוחר תשלום באמצעות KashCash ב-Checkout
-    Shopify->>Plugin: POST /api/shopify/payment-session (mTLS)
-    Plugin->>Plugin: שומר PaymentSession ומייצר orderId מספרי + orderKey מוצפן
-    Plugin-->>Shopify: { redirect_url: "https://{stage|prod}-api.safecashapps.com/.../payment/page/?orderId=...&baseUrl={host}/wp-json" }
-    Shopify->>Buyer: Redirect לדף התשלום של KashCash
-    Cashi->>Plugin: GET /wp-json/kashcash/v1/order/:orderId (חתימת RSA-SHA512 ב-x-signature)
-    Plugin-->>Cashi: { total, business_id, merchant_token, order_key }
-    Buyer->>Cashi: מאשר תשלום באפליקציית KashCash (QR / Deep Link)
-    Cashi->>Plugin: POST /wp-json/kashcash/v1/webhook/ (חתימת RSA-SHA512 ב-x-signature)
-    Plugin->>Cashi: POST /api/external/v1/ecommerce/transaction/status/ (אימות כפול עם MerchantToken)
-    Cashi-->>Plugin: { completed: true }
-    Plugin->>Shopify: GraphQL paymentSessionResolve(id)
-    Shopify-->>Plugin: { redirectUrl: "https://shop.myshopify.com/.../thank_you" }
-    Cashi->>Buyer: Redirect אל /checkout/order-received/:orderId?key=:orderKey
-    Buyer->>Plugin: GET /checkout/order-received/:orderId?key=:orderKey
-    Plugin->>Buyer: 302 Redirect אל דף התודה של Shopify (redirectUrl)
+1. **שלב 1 – חיבור החנות בלחיצה אחת (`/app` או `/`)**:
+   - בעל החנות נכנס לכתובת התוסף (או מתוך ה-Shopify Admin), מקליד את שם החנות שלו (למשל `my-store` או `my-store.myshopify.com`) ולוחץ **"המשך להתקנה והגדרת החנות"**.
+   - המערכת מבצעת אימות OAuth 2.0 מאובטח מול Shopify ומעבירה את הסוחר ישירות לפורטל ההגדרות של החנות.
+2. **שלב 2 – הזנת פרטי סוחר KashCash**:
+   - במסך ההגדרות המודרך (בעברית מלאה עם חיווי שלבים `1 → 2 → 3`), הסוחר מזין שני שדות בלבד שקיבל מ-KashCash:
+     - **Business ID** (מזהה עסק / ח.פ.)
+     - **Merchant Token** (טוקן סוחר – עם כפתור `הצג/הסתר` למניעת טעויות העתקה)
+   - לוחץ על **"שמור והפעל את KashCash ב-Shopify"**.
+3. **שלב 3 – הפעלה אוטומטית ב-Shopify Payments**:
+   - התוסף שומר את הטוקן בהצפנת `AES-256-GCM`, מפעיל אוטומטית את `paymentsAppsConfigure(ready: true)` ב-GraphQL מול Shopify, ומעביר את הסוחר ישירות למסך **Settings → Payments** בחנות ה-Shopify שלו לאישור סופי.
+
+---
+
+## 2. תפעול ותחזוקה שוטפת (Operation & Maintenance)
+
+* **עדכון הגדרות ללא צורך בהזנת הטוקן מחדש**:
+  - כאשר חנות כבר מוגדרת, פורטל הניהול (`/app`) מציג חיווי ירוק (**"החנות מוגדרת ומוכנה לסליקה"**) ואת סיומת הטוקן השמור (`••••••••••••abcd`).
+  - הסוחר יכול לכבות/להדליק **מצב בדיקות (Test Mode)** או לעדכן `Business ID` וללחוץ **"שמור שינויים"** מבלי להקליד מחדש את ה-`Merchant Token`.
+* **קיצור דרך ישיר להגדרות התשלום ב-Shopify**:
+  - בראש פורטל הניהול מופיע כפתור **"פתח הגדרות תשלום ב-Shopify ↗"** המעביר את הסוחר בלחיצה אחת להגדרות השער בחנות שלו.
+* **איפוס / ניתוק מהיר**:
+  - כפתור **"איפוס / ניתוק פרטי סוחר"** מאפשר לאפס את הגדרות החיבור של החנות בלחיצה אחת במקרה של החלפת חשבון עסקי.
+* **החזרים כספיים (Refunds) אוטומטיים מובנים**:
+  - ביצוע `Refund` רגיל מתוך מסך ההזמנה ב-Shopify Admin שולח אוטומטית בקשת זיכוי מאובטחת ל-KashCash, כולל הגנה מפני החזר כפול או החזר העולה על סכום העסקה המקורי.
+* **ניקיון אוטומטי בהסרת התוסף (Zero Maintenance)**:
+  - בעת הסרת האפליקציה מהחנות (`app/uninstalled` או `shop/redact`), התוסף מוחק אוטומטית את כל הטוקנים של החנות ממסד הנתונים.
+
+---
+
+## 3. התקנה והרצה מהירה למפתחים / DevOps
+
+### אפשרות א': התקנה אוטומטית בפקודה אחת (`npm run setup`)
+```bash
+# 1. התקנת תלויות
+npm install
+
+# 2. אשף הגדרה אוטומטי (מייצר קובץ .env עם מפתח הצפנה ENCRYPTION_KEY חדש ויוצר תיקיית ./data)
+npm run setup
+
+# 3. הפעלה במצב פיתוח
+npm run dev
+```
+
+### אפשרות ב': הרצה באמצעות Docker Compose (מומלץ לייצור)
+```bash
+docker compose up -d --build
+```
+* הקונטיינר רץ תחת משתמש לא-פריווילגי (`node`), שומר את מסד הנתונים ב-Volume קבוע (`kashcash_shopify_data`), וכולל `HEALTHCHECK` מובנה מול `/healthz`.
+
+### פריסת ה-Extension ל-Shopify Partners
+```bash
+# סביבת פיתוח / בדיקות
+npm run shopify:deploy:dev
+
+# סביבת ייצור (Production)
+npm run shopify:deploy:prod
 ```
 
 ---
 
-## אבטחה (Security Highlights)
+## 4. ארכיטקטורת אבטחה (Financial-Grade Security)
 
 1. **אימות חתימות RSA-SHA512 מול KashCash (`x-signature`)**:
-   - אימות קריפטוגרפי מלא (`RSA-SHA512`) על `Method`, `PathAndQuery` ו-`Body` מול המפתח הציבורי של `ECommerceBackChannel` ב-`cashi-server`.
+   - אימות קריפטוגרפי מלא על `Method`, `PathAndQuery` ו-`Body` בכל קריאות ה-Back-Channel (`/wp-json/kashcash/v1/order/:orderId` ו-`/wp-json/kashcash/v1/webhook/`).
 2. **אימות כפול של סטטוס עסקה (Double Verification)**:
-   - בעת קבלת Webhook של `approved`, השרת לא מסתפק ב-Webhook אלא מבצע קריאת אימות אקטיבית אל `POST /api/external/v1/ecommerce/transaction/status/` עם ה-`MerchantToken` של הסוחר ומוודא ש-`completed === true`.
-3. **הצפנת טוקנים במנוחה (AES-256-GCM)**:
-   - גם ה-`MerchantToken` של KashCash וגם ה-`access_token` של Shopify נשמרים במסד הנתונים כשהם מוצפנים ב-`AES-256-GCM` עם IV אקראי ו-AuthTag של 16 בתים.
-4. **אימות Shopify HMAC-SHA256 ו-mTLS**:
-   - כל תהליך ה-OAuth וה-Webhooks של Shopify (כולל GDPR: `shop/redact`, `customers/redact`, `customers/data_request`, `app/uninstalled`) מאומתים באמצעות `crypto.timingSafeEqual`.
-   - תמיכה ב-mTLS (`MTLS_REQUIRED=true`) מול קריאות ה-Session של Shopify.
-5. **הגנת SSRF ו-HTTP Security Headers**:
-   - אימות קפדני של `*.myshopify.com`, כותרות `Helmet` (CSP, HSTS), ולוגים מובנים (`pino`) המצנזרים אוטומטית טוקנים וסודות.
+   - בעת קבלת Webhook של `approved`, השרת מבצע קריאת אימות אקטיבית אל `POST /api/external/v1/ecommerce/transaction/status/` ומוודא ש-`completed === true`.
+3. **מזהי הזמנה אקראיים (12 ספרות) ומניעת Replay**:
+   - מספרי `orderId` נוצרים באמצעות `crypto.randomInt` למניעת ניחוש הזמנות, וכל `transactionId` נקשר באופן חד-חד-ערכי (`UNIQUE`) להזמנה אחת בלבד.
+4. **בידוד בין חנויות (Cross-Tenant Isolation) והגבלת סכום החזר**:
+   - אימות בעלות חנות מלא על כל פעולת החזר או ביטול, וחסימת החזרים מצטברים מעבר לסכום העסקה המקורי.
+5. **הצפנת סודות במנוחה (`AES-256-GCM`) ואפס חשיפת מידע**:
+   - כל הטוקנים נשמרים מוצפנים ב-`AES-256-GCM`, ונקודות הקצה אינן חושפות כתובות שרתים פנימיות או פרטי סביבה.
 
 ---
 
-## סביבות עבודה: DEV (Stage) ו-PROD
-
-| סביבה | קובץ הגדרות Shopify CLI | קובץ סביבה | שרת KashCash יעד |
-|---|---|---|---|
-| **DEV / STAGE** | `shopify.app.dev.toml` | `.env.development` | `https://stage-api.safecashapps.com` |
-| **PRODUCTION** | `shopify.app.prod.toml` | `.env.production` | `https://prod-api.safecashapps.com` |
-
-> **הערה:** גם בסביבת PROD, אם עסקה מסומנת כ-`test: true` בשופיפיי או שהסוחר הפעיל **Test Mode** במסך ההגדרות של התוסף, העסקה תופנה אוטומטית ל-`stage-api.safecashapps.com`.
-
----
-
-## התקנה והרצה
+## 5. בדיקות אוטומטיות ובקרת איכות
 
 ```bash
-# התקנת תלויות
-npm install
-
-# הרצת בדיקות (Unit + Integration)
+# הרצת כל בדיקות ה-Unit וה-Integration (22 בדיקות)
 npm test
 
-# בדיקת קומפילציית TypeScript
+# בדיקת טיפוסים מלאה (TypeScript Strict)
 npm run lint
 
-# הרצה מקומית במצב פיתוח
-npm run dev
-
-# פריסת ה-Extension לשופיפיי (DEV או PROD)
-npm run shopify:deploy:dev
-npm run shopify:deploy:prod
+# בניית גרסת ייצור
+npm run build
 ```
