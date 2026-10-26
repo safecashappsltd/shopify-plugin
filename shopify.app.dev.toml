@@ -1,0 +1,31 @@
+# ============================================================================
+# Shopify App Configuration — DEV / STAGE Environment
+# Deploy with: npm run shopify:deploy:dev
+# ============================================================================
+
+name = "KashCash Payments (DEV)"
+client_id = "REPLACE_WITH_DEV_SHOPIFY_API_KEY"
+application_url = "https://shopify-stage.safecashapps.com/app"
+embedded = false
+
+[access_scopes]
+scopes = "write_payment_gateways,write_payment_sessions"
+
+[auth]
+redirect_urls = [
+  "https://shopify-stage.safecashapps.com/api/auth/callback"
+]
+
+[webhooks]
+api_version = "2025-01"
+
+  [[webhooks.subscriptions]]
+  topics = ["app/uninstalled"]
+  uri = "/api/shopify/webhooks/app-uninstalled"
+
+  [[webhooks.subscriptions]]
+  compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
+  uri = "/api/shopify/webhooks/compliance"
+
+[build]
+include_config_on_deploy = true

@@ -1,0 +1,32 @@
+# ============================================================================
+# Shopify Offsite Payments Extension Configuration
+# ============================================================================
+
+api_version = "2025-01"
+
+[[extensions]]
+name = "KashCash"
+type = "payments_extension"
+handle = "kashcash-payments"
+merchant_label = "KashCash (תשלום באפליקציית קאשקאש)"
+buyer_label = "KashCash - תשלום מהיר ומאובטח באפליקציית קאשקאש"
+
+# Session endpoints (Updated automatically per environment or set to your PROD/STAGE domain)
+payment_session_url = "https://shopify.safecashapps.com/api/shopify/payment-session"
+refund_session_url = "https://shopify.safecashapps.com/api/shopify/refund-session"
+capture_session_url = "https://shopify.safecashapps.com/api/shopify/capture-session"
+void_session_url = "https://shopify.safecashapps.com/api/shopify/void-session"
+
+supported_countries = ["IL"]
+supported_currencies = ["ILS"]
+supported_payment_methods = ["kashcash", "wallet"]
+
+test_mode_available = true
+default_buyer_label = "KashCash"
+supports_oversell_protection = false
+supports_3ds = false
+supports_installments = false
+supports_deferred_payments = false
+
+[[extensions.targeting]]
+target = "payments.offsite.render"

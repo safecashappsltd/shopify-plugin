@@ -1,0 +1,40 @@
+services:
+  shopify-kashcash-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: shopify-kashcash-dev
+    profiles: ["dev"]
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.development
+    environment:
+      NODE_ENV: development
+      APP_ENV: dev
+      DATABASE_PATH: /app/data/kashcash-shopify-dev.db
+    volumes:
+      - kashcash_shopify_dev_data:/app/data
+    restart: unless-stopped
+
+  shopify-kashcash-prod:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: shopify-kashcash-prod
+    profiles: ["prod"]
+    ports:
+      - "3001:3000"
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+      APP_ENV: prod
+      DATABASE_PATH: /app/data/kashcash-shopify-prod.db
+    volumes:
+      - kashcash_shopify_prod_data:/app/data
+    restart: always
+
+volumes:
+  kashcash_shopify_dev_data:
+  kashcash_shopify_prod_data:

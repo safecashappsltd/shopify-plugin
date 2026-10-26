@@ -1,0 +1,41 @@
+{
+  "name": "shopify-kashcash-payments",
+  "version": "1.0.0",
+  "description": "KashCash Offsite Payments App for Shopify (DEV/STAGE & PROD)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "tsc --noEmit",
+    "shopify:dev": "shopify app dev --config shopify.app.dev.toml",
+    "shopify:deploy:dev": "shopify app deploy --config shopify.app.dev.toml",
+    "shopify:deploy:prod": "shopify app deploy --config shopify.app.prod.toml"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "helmet": "^8.0.0",
+    "pino": "^9.6.0",
+    "pino-http": "^10.4.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.4",
+    "@types/supertest": "^6.0.2",
+    "supertest": "^7.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^5.0.5"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

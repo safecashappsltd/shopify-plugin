@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.local
+.env.development
+.env.production
+*.pem
+*.key
+*.crt
+.shopify/
+.DS_Store

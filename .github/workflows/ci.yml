@@ -1,0 +1,39 @@
+name: CI - KashCash Shopify Payments App
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Typecheck, Build & Test (Node 22)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Security audit (0 vulnerabilities)
+        run: npm audit --audit-level=moderate
+
+      - name: TypeScript typecheck
+        run: npm run lint
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Run unit & integration test suite
+        run: npm test
